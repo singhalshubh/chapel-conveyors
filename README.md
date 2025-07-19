@@ -1,5 +1,5 @@
 ## Introduction
-This repository contains the `chapel` and `conveyors` installation and execution on $\texttt{Frontier@ORNL}$. We conduct weak scaling experiments for $\texttt{nodes=[1...2048]}$ with $\texttt{64 processes per node}$ and $\texttt{8GB}$ per node. We attempt this research in spirit of validating Chapel (2022-2025) results showcased, where Chapel auto-aggregated mode serves better performance than Conveyors. 
+This repository contains the `chapel` and `conveyors` installation and execution on $\texttt{Frontier@ORNL}$. We conduct weak scaling experiments for $\texttt{nodes=[1...2048]}$ with $\texttt{64 cores per node}$ and $\texttt{8GB per node}$ on 100GB/s network bandwidth Slingshot. We attempt this research in spirit of validating Chapel (2022-2025) results showcased, where Chapel auto-aggregated mode serves better performance than Conveyors. 
 This work is dated July 2025.
 
 ## Team (GT+ORNL)
