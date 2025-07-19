@@ -1,11 +1,12 @@
 This repository contains the `chapel` and `conveyors` installation and execution on Frontier (ORNL). We conduct weak scaling experiments for nodes=[1...256] with 64 processes per node and 8GB per node. We attempt this research in spirit of validating Chapel-2025 (since 2022) results showcased, where Chapel auto-aggregated mode serves better performance than Conveyors. 
 
 ## Directory Structure
+```
 .
 ├── chapel-frontier.tar.gz (contains execution of chapel IG)
 └── README.md
-
 0 directories, 2 files
+```
 
 ## Installation of Chapel on Frontier
 > We use `ofi` for setup.
