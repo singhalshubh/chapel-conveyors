@@ -10,6 +10,135 @@ Shubhendra Pal Singhal, Akihiro Hayashi, Oscar Hernandez, Vivek Sarkar
 - Identify the performance in execution time for Chapel vs Conveyors on scale. 
 - Reason this performance different using a mathematical model, and diving in memory and network utlization. We shall ignore the visions/success of programming models out of scope, and solely focus on raw performance numbers.
 
+## Explanation of Chapel-IG
+
+```
+proc main() {
+  const D = if useBlockArr then blockDist.createDomain(0..#tableSize)
+                           else cyclicDist.createDomain(0..#tableSize);
+  var A: [D] int = D;
+
+  const UpdatesDom = blockDist.createDomain(0..#numUpdates);
+  var Rindex: [UpdatesDom] int;
+
+  fillRandom(Rindex, 208);
+  Rindex = mod(Rindex, tableSize);
+  var tmp: [UpdatesDom] int = -1;
+
+  startTimer();
+  forall (t, r) in zip (tmp, Rindex) with (var agg = new SrcAggregator(int)) {
+    agg.copy(t, A[r]);
+  }
+  stopTimer("AGG");
+}
+```
+- Input data is indices (Rindex) are generated at random [0, $N$ * num_locale * num_tasks/locale]. 
+- Operation performed is copy the value of A[rindex] into local buffer `t`. Therefore, destination increments +1 for request after-which a PUT-->GET is issued to copy the value back. It uses `SrcAggregator` which implies `t` is on local locale and A[r] is on remote locale. 
+
+`SrcAggregator.init operation`
+```
+proc ref postinit() {
+      dstAddrs = allocate(c_ptr(aggType), numLocales);
+      lSrcAddrs = allocate(c_ptr(aggType), numLocales);
+      bufferIdxs = bufferIdxAlloc();
+      for loc in myLocaleSpace {
+        dstAddrs[loc] = allocate(aggType, bufferSize);
+        lSrcAddrs[loc] = allocate(aggType, bufferSize);
+        bufferIdxs[loc] = 0;
+        rSrcAddrs[loc] = new remoteBuffer(aggType, bufferSize, loc);
+        rSrcVals[loc] = new remoteBuffer(elemType, bufferSize, loc);
+      }
+    }
+```
+- SrcAggregator is initialised with a following set of buffers - `dstAddrs, lSrcAddrs` are local and are of size #num_locale*8192, whereas `rSrcAddrs, rSrcVals` are remote buffers allocated for same size. 
+
+`SrcAggregator.copy operation`
+```
+    inline proc ref copy(ref dst: elemType, const ref src: elemType) {
+      if verboseAggregation {
+        writeln("SrcAggregator.copy is called");
+      }
+      if boundsChecking {
+        assert(dst.locale.id == here.id);
+      }
+      const dstAddr = getAddr(dst);
+
+      const loc = src.locale.id;
+      lastLocale = loc;
+      const srcAddr = getAddr(src);
+
+      ref bufferIdx = bufferIdxs[loc];
+      lSrcAddrs[loc][bufferIdx] = srcAddr;
+      dstAddrs[loc][bufferIdx] = dstAddr;
+      bufferIdx += 1;
+
+      if bufferIdx == bufferSize {
+        _flushBuffer(loc, bufferIdx, freeData=false);
+        opsUntilYield = yieldFrequency;
+      } else if opsUntilYield == 0 {
+        currentTask.yieldExecution();
+        opsUntilYield = yieldFrequency;
+      } else {
+        opsUntilYield -= 1;
+      }
+    }
+
+```
+- SrcAggregator per task simply copies the packet (in locale-wise buffer), and once #appends for any one locale = 1024 by a task, it calls flush operation.
+
+`SrcAggregator.flush operation`
+
+```
+proc ref _flushBuffer(loc: int, ref bufferIdx, freeData) {
+      const myBufferIdx = bufferIdx;
+      if myBufferIdx == 0 then return;
+
+      ref myLSrcVals = lSrcVals[loc];
+      ref myRSrcAddrs = rSrcAddrs[loc];
+      ref myRSrcVals = rSrcVals[loc];
+
+      // Allocate remote buffers
+      const rSrcAddrPtr = myRSrcAddrs.cachedAlloc();
+      const rSrcValPtr = myRSrcVals.cachedAlloc();
+
+      // Copy local addresses to remote buffer
+      myRSrcAddrs.PUT(lSrcAddrs[loc], myBufferIdx);
+
+      // Process remote buffer, copying the value of our addresses into a
+      // remote buffer
+      on Locales[loc] {
+        for i in 0..<myBufferIdx {
+          rSrcValPtr[i] = rSrcAddrPtr[i].deref();
+        }
+        if freeData {
+          myRSrcAddrs.localFree(rSrcAddrPtr);
+        }
+      }
+      if freeData {
+        myRSrcAddrs.markFreed();
+      }
+
+      // Copy remote values into local buffer
+      myRSrcVals.GET(myLSrcVals, myBufferIdx);
+
+      // Assign the srcVal to the dstAddrs
+      var dstAddrPtr = c_addrOf(dstAddrs[loc][0]);
+      var srcValPtr = c_addrOf(myLSrcVals[0]);
+      for i in 0..<myBufferIdx {
+        dstAddrPtr[i].deref() = srcValPtr[i];
+      }
+
+      bufferIdx = 0;
+    }
+```
+
+- On flush per locale, every task invokes `PUT` for desired addresses of indices and runs a blocking operation to copy the values to remote locale. After that, it runs GET operation to fetch the values. 
+
+## Theoretical Understanding of SrcAggregator
+- Runs per task, where every task knows address of A[] which is on shared memory (using shmem_malloc analogous). 
+- Buffers are locale-wise and are flushed and executed in blocking way per task. If we view the same from process pov, i.e. per locale, certainly we do see overlap of comp and comm since per locale, otehr tasks can still perform their iteration. 
+- Note, that conveyors overlaps comp and comm even for per task. Since, it allocates buffers per task, every task can perform comp for other PEs fetch (remote or local), whilst issuing communication call. Here backpressure kicks in, whereas in Chapel, blocking nature prevents this.  
+
 ## Directory Structure
 ```
 .
@@ -59,6 +188,42 @@ make -j20
 
 cd test/studies/bale/aggregation/
 chpl ig.chpl --fast -suseBlockArr=true
+```
+
+### Chapel Environment
+```
+shubh@login08:~/chapel> $CHPL_HOME/util/printchplenv
+machine info: Linux login08 6.4.0-150600.23.47_15.0.10-cray_shasta_c #1 SMP Mon Apr 28 14:04:47 UTC 2025 (fd865db) x86_64
+CHPL_HOME: /ccs/home/shubh/chapel *
+script location: /autofs/nccs-svm1_home2/shubh/chapel/util/chplenv
+CHPL_TARGET_PLATFORM: hpe-cray-ex
+CHPL_TARGET_COMPILER: llvm
+CHPL_TARGET_ARCH: x86_64
+CHPL_TARGET_CPU: x86-trento
+CHPL_LOCALE_MODEL: flat *
+CHPL_COMM: ofi *
+  CHPL_LIBFABRIC: system
+  CHPL_COMM_OFI_OOB: pmi2
+CHPL_TASKS: qthreads
+CHPL_LAUNCHER: slurm-srun *
+CHPL_TIMERS: generic
+CHPL_UNWIND: none
+CHPL_TARGET_MEM: jemalloc
+CHPL_ATOMICS: cstdlib
+  CHPL_NETWORK_ATOMICS: ofi
+CHPL_GMP: bundled
+CHPL_HWLOC: bundled
+CHPL_RE2: bundled
+CHPL_LLVM: bundled *
+CHPL_AUX_FILESYS: none
+```
+
+And we investigate
+https://github.com/chapel-lang/chapel/blob/main/modules/packages/CopyAggregation.chpl
+```
+defaultBuffSize = 8192
+yieldFrequency = 1024
+When the destination is always local and the source may be remote, a :record:`SrcAggregator` should be used.
 ```
 
 ### Execution for Chapel
