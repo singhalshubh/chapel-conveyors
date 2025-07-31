@@ -353,6 +353,84 @@ done
 srun -N $NODES -n $(($NODES*64)) ./bale/src/bale_classic/build_cray/bin/ig -n $N -T $T &> out_bale_N${N}_T${T}_nodes_${NODES}
 ```
 
+## Results
+
+- We observe `exstack` and `exstack2` go OUT-OF-MEMORY(OOM) at and beyond 1024 nodes.
+- We observe `Conveyors` to be performant on scale.
+
+## Running Chapel Program for 16M HugePageSize 
+In addition to normal execution,
+```
+module load craype-hugepages16M
+export CHPL_RT_USE_HUGEPAGES=yes
+```
+
+`conf_chapel_huge.sh`
+This file checks whether the job is using `HugePageModules` correctly or not. This checks the env.
+
+```
+#!/bin/bash
+#SBATCH -A csc607
+#SBATCH -J chapel_ig
+#SBATCH -t 0:40:00
+#SBATCH -p batch
+#SBATCH -S 0
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=64
+#SBATCH --ntasks 1
+
+export CHPL_LAUNCHER_ACCOUNT=csc607
+export CHPL_LAUNCHER_WALLTIME=0:40:00
+export CHPL_LAUNCHER_USE_SBATCH=1
+export CHPL_LAUNCHER_QUEUE=batch
+export CHPL_LAUNCHER_CPUS_PER_CU=64
+export CHPL_RT_USE_HUGEPAGES=yes
+
+export CHPL_LAUNCHER=slurm-srun
+export CHPL_RT_MAX_HEAP_SIZE="50%"
+export CHPL_LAUNCHER_MEM=unset
+export CHPL_LAUNCHER_CORES_PER_LOCALE=64
+
+export CHPL_LLVM=bundled
+export CHPL_COMM=ofi
+export CHPL_LOCALE_MODEL=flat
+export CHPL_GPU=none
+
+export CHPL_RT_USE_HUGEPAGES=yes
+export CHPL_RT_PRINT_ENV=true
+
+module load PrgEnv-gnu
+module load cray-python
+module load craype-hugepages16M
+
+cd chapel/
+source util/setchplenv.bash
+cd test/studies/bale/aggregation/
+srun -n 1 ./ig_real -nl 1 &
+echo "Runtime env:"
+env | grep HUGE
+```
+#### Output
+```
+Runtime env:
+OLCF_FAMILY_CRAYPE_HUGEPAGES=craype-hugepages16M
+PE_PRODUCT_LIST=CRAYPE:CRAY_PMI:CRAYPE_X86_TRENTO:PERFTOOLS:CRAYPAT:HUGETLB16M
+HUGETLB_DEFAULT_PAGE_SIZE=16M
+OLCF_FAMILY_CRAYPE_HUGEPAGES_VERSION=false
+PE_PKGCONFIG_PRODUCTS=PE_HUGEPAGES:PE_LIBSCI:PE_MPICH:PE_DSMML:PE_PMI:PE_XPMEM
+HUGETLB_MORECORE_HEAPBASE=10000000000
+PE_HUGEPAGES_PKGCONFIG_VARIABLES=PE_HUGEPAGES_TEXT_SEGMENT:PE_HUGEPAGES_PAGE_SIZE
+HUGETLB_MORECORE=yes
+CHPL_RT_USE_HUGEPAGES=yes
+LMOD_FAMILY_CRAYPE_HUGEPAGES_VERSION=false
+LMOD_FAMILY_CRAYPE_HUGEPAGES=craype-hugepages16M
+__LMOD_REF_COUNT_PE_PKGCONFIG_PRODUCTS=PE_HUGEPAGES:1;PE_LIBSCI:1;PE_MPICH:1;PE_DSMML:1;PE_PMI:1;PE_XPMEM:1
+HUGETLB_FORCE_ELFMAP=yes+
+HUGETLB_ELFMAP=W
+__LMOD_REF_COUNT_PE_PRODUCT_LIST=CRAYPE:1;CRAY_PMI:1;CRAYPE_X86_TRENTO:1;PERFTOOLS:1;CRAYPAT:1;HUGETLB16M:1
+```
+
+
 ## Contributors
 Shubhendra Pal Singhal (ssinghal74@gatech.edu), Habanero Labs, USA
 > Credits to Dr. Akihiro Hayashi (ahayashi@gatech.edu) for finding the performance reportings of Chapel.
