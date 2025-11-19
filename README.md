@@ -448,7 +448,10 @@ __LMOD_REF_COUNT_PE_PRODUCT_LIST=CRAYPE:1;CRAY_PMI:1;CRAYPE_X86_TRENTO:1;PERFTOO
 ```
 
 ## Energy measurements
-`ig.chpl` in this repository contains the PAPI instrumentation for energy for node and memory using crap_pm counters. 
+`ig.chpl` in this repository contains the PAPI instrumentation for energy for node and memory using crap_pm counters.
+
+Compile with
+`chpl ig.chpl --fast -suseBlockArr=true -lpapi`
 
 ## Contributors
 Shubhendra Pal Singhal (ssinghal74@gatech.edu), Habanero Labs, USA
