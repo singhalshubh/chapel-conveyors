@@ -10,6 +10,23 @@ Shubhendra Pal Singhal, Akihiro Hayashi, Oscar Hernandez, Vivek Sarkar
 - Identify the performance in execution time for Chapel vs Conveyors on scale. 
 - Reason this performance different using a mathematical model, and diving in memory and network utlization. We shall ignore the visions/success of programming models out of scope, and solely focus on raw performance numbers.
 
+## Directory Structure
+```
+.
+├── bale_block
+│   ├── ig_block
+│   ├── ig_block.cpp
+│   ├── ig_cyclic
+│   ├── ig_cyclic.cpp
+│   ├── Makefile
+│   └── run.sh
+├── chapel-frontier.tar.gz
+├── ig.chpl
+└── README.md
+
+1 directory, 9 files
+```
+
 ## Explanation of Chapel-IG
 
 ```
@@ -430,6 +447,8 @@ HUGETLB_ELFMAP=W
 __LMOD_REF_COUNT_PE_PRODUCT_LIST=CRAYPE:1;CRAY_PMI:1;CRAYPE_X86_TRENTO:1;PERFTOOLS:1;CRAYPAT:1;HUGETLB16M:1
 ```
 
+## Energy measurements
+`ig.chpl` in this repository contains the PAPI instrumentation for energy for node and memory using crap_pm counters. 
 
 ## Contributors
 Shubhendra Pal Singhal (ssinghal74@gatech.edu), Habanero Labs, USA
