@@ -3,16 +3,16 @@ This repository contains the `chapel` and `conveyors` installation and execution
 Dated, Feb 9th 2026 EST.
 
 ## Team (GT + ORNL + LANL + HPE)
-Georgia Institute of Technology 
+Georgia Institute of Technology: 
 `Shubhendra Pal Singhal, Akihiro Hayashi, Vivek Sarkar`
 
-Oak Ridge National Laboratory
+Oak Ridge National Laboratory:
 `Aaron Welch, Oscar Hernandez`
 
-Los Alamos National Laboratory, USA
+Los Alamos National Laboratory:
 `Steve Poole`
 
-Hewlett Packard Enterprise, USA
+Hewlett Packard Enterprise, USA :
 `Nathan Wichmann, Bradford L. Chamberlain`
 
 ## Directory Structure
