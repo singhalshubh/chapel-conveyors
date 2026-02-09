@@ -1,0 +1,206 @@
+## Explanation of Chapel Index Gather
+```
+proc main() {
+  const D = if useBlockArr then blockDist.createDomain(0..#tableSize)
+                           else cyclicDist.createDomain(0..#tableSize);
+  var A: [D] int = D;
+
+  const UpdatesDom = blockDist.createDomain(0..#numUpdates);
+  var Rindex: [UpdatesDom] int;
+
+  fillRandom(Rindex, 208);
+  Rindex = mod(Rindex, tableSize);
+  var tmp: [UpdatesDom] int = -1;
+
+  startTimer();
+  forall (t, r) in zip (tmp, Rindex) with (var agg = new SrcAggregator(int)) {
+    agg.copy(t, A[r]);
+  }
+  stopTimer("AGG");
+}
+```
+- Input data is indices (Rindex) are generated at random [0, $N$ * num_locale * num_tasks/locale]. 
+- Operation performed is copy the value of A[rindex] into local buffer `t`. Therefore, destination increments +1 for request after-which a PUT-->GET is issued to copy the value back. It uses `SrcAggregator` which implies `t` is on local locale and A[r] is on remote locale. 
+
+`SrcAggregator.init operation`
+```
+proc ref postinit() {
+      dstAddrs = allocate(c_ptr(aggType), numLocales);
+      lSrcAddrs = allocate(c_ptr(aggType), numLocales);
+      bufferIdxs = bufferIdxAlloc();
+      for loc in myLocaleSpace {
+        dstAddrs[loc] = allocate(aggType, bufferSize);
+        lSrcAddrs[loc] = allocate(aggType, bufferSize);
+        bufferIdxs[loc] = 0;
+        rSrcAddrs[loc] = new remoteBuffer(aggType, bufferSize, loc);
+        rSrcVals[loc] = new remoteBuffer(elemType, bufferSize, loc);
+      }
+    }
+```
+- SrcAggregator is initialised with a following set of buffers - `dstAddrs, lSrcAddrs` are local and are of size #num_locale*8192, whereas `rSrcAddrs, rSrcVals` are remote buffers allocated for same size. 
+
+`SrcAggregator.copy operation`
+```
+    inline proc ref copy(ref dst: elemType, const ref src: elemType) {
+      if verboseAggregation {
+        writeln("SrcAggregator.copy is called");
+      }
+      if boundsChecking {
+        assert(dst.locale.id == here.id);
+      }
+      const dstAddr = getAddr(dst);
+
+      const loc = src.locale.id;
+      lastLocale = loc;
+      const srcAddr = getAddr(src);
+
+      ref bufferIdx = bufferIdxs[loc];
+      lSrcAddrs[loc][bufferIdx] = srcAddr;
+      dstAddrs[loc][bufferIdx] = dstAddr;
+      bufferIdx += 1;
+
+      if bufferIdx == bufferSize {
+        _flushBuffer(loc, bufferIdx, freeData=false);
+        opsUntilYield = yieldFrequency;
+      } else if opsUntilYield == 0 {
+        currentTask.yieldExecution();
+        opsUntilYield = yieldFrequency;
+      } else {
+        opsUntilYield -= 1;
+      }
+    }
+
+```
+- SrcAggregator per task simply copies the packet (in locale-wise buffer), and once #appends for any one locale = 1024 by a task, it calls flush operation.
+
+`SrcAggregator.flush operation`
+
+```
+proc ref _flushBuffer(loc: int, ref bufferIdx, freeData) {
+      const myBufferIdx = bufferIdx;
+      if myBufferIdx == 0 then return;
+
+      ref myLSrcVals = lSrcVals[loc];
+      ref myRSrcAddrs = rSrcAddrs[loc];
+      ref myRSrcVals = rSrcVals[loc];
+
+      // Allocate remote buffers
+      const rSrcAddrPtr = myRSrcAddrs.cachedAlloc();
+      const rSrcValPtr = myRSrcVals.cachedAlloc();
+
+      // Copy local addresses to remote buffer
+      myRSrcAddrs.PUT(lSrcAddrs[loc], myBufferIdx);
+
+      // Process remote buffer, copying the value of our addresses into a
+      // remote buffer
+      on Locales[loc] {
+        for i in 0..<myBufferIdx {
+          rSrcValPtr[i] = rSrcAddrPtr[i].deref();
+        }
+        if freeData {
+          myRSrcAddrs.localFree(rSrcAddrPtr);
+        }
+      }
+      if freeData {
+        myRSrcAddrs.markFreed();
+      }
+
+      // Copy remote values into local buffer
+      myRSrcVals.GET(myLSrcVals, myBufferIdx);
+
+      // Assign the srcVal to the dstAddrs
+      var dstAddrPtr = c_addrOf(dstAddrs[loc][0]);
+      var srcValPtr = c_addrOf(myLSrcVals[0]);
+      for i in 0..<myBufferIdx {
+        dstAddrPtr[i].deref() = srcValPtr[i];
+      }
+
+      bufferIdx = 0;
+    }
+```
+
+- On flush per locale, every task invokes `PUT` for desired addresses of indices and runs a blocking operation to copy the values to remote locale. After that, it runs GET operation to fetch the values. 
+
+## Theoretical Understanding of SrcAggregator
+- Runs per task, where every task knows address of A[] which is on shared memory (using shmem_malloc analogous). 
+- Buffers are locale-wise and are flushed and executed in blocking way per task. If we view the same from process pov, i.e. per locale, certainly we do see overlap of comp and comm since per locale, otehr tasks can still perform their iteration. 
+- Note, that conveyors overlaps comp and comm even for per task. Since, it allocates buffers per task, every task can perform comp for other PEs fetch (remote or local), whilst issuing communication call. Here backpressure kicks in, whereas in Chapel, blocking nature prevents this.  
+
+
+## Results
+
+- We observe `exstack` and `exstack2` go OUT-OF-MEMORY(OOM) at and beyond 1024 nodes.
+- We observe `Conveyors` to be performant on scale.
+
+## Running Chapel Program for 16M HugePageSize 
+In addition to normal execution,
+```
+module load craype-hugepages16M
+export CHPL_RT_USE_HUGEPAGES=yes
+```
+
+This file checks whether the job is using `HugePageModules` correctly or not. This checks the env.
+
+```
+#!/bin/bash
+#SBATCH -A <>
+#SBATCH -J chapel_ig
+#SBATCH -t 0:40:00
+#SBATCH -p batch
+#SBATCH -S 0
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=64
+#SBATCH --ntasks 1
+
+export CHPL_LAUNCHER_WALLTIME=0:40:00
+export CHPL_LAUNCHER_USE_SBATCH=1
+export CHPL_LAUNCHER_QUEUE=batch
+export CHPL_LAUNCHER_CPUS_PER_CU=64
+export CHPL_RT_USE_HUGEPAGES=yes
+
+export CHPL_LAUNCHER=slurm-srun
+export CHPL_RT_MAX_HEAP_SIZE="50%"
+export CHPL_LAUNCHER_MEM=unset
+export CHPL_LAUNCHER_CORES_PER_LOCALE=64
+
+export CHPL_LLVM=bundled
+export CHPL_COMM=ofi
+export CHPL_LOCALE_MODEL=flat
+export CHPL_GPU=none
+
+export CHPL_RT_USE_HUGEPAGES=yes
+export CHPL_RT_PRINT_ENV=true
+
+module load PrgEnv-gnu
+module load cray-python
+module load craype-hugepages16M
+
+cd chapel/
+source util/setchplenv.bash
+cd test/studies/bale/aggregation/
+srun -n 1 ./ig_real -nl 1 &
+echo "Runtime env:"
+env | grep HUGE
+```
+#### Output
+```
+Runtime env:
+OLCF_FAMILY_CRAYPE_HUGEPAGES=craype-hugepages16M
+PE_PRODUCT_LIST=CRAYPE:CRAY_PMI:CRAYPE_X86_TRENTO:PERFTOOLS:CRAYPAT:HUGETLB16M
+HUGETLB_DEFAULT_PAGE_SIZE=16M
+OLCF_FAMILY_CRAYPE_HUGEPAGES_VERSION=false
+PE_PKGCONFIG_PRODUCTS=PE_HUGEPAGES:PE_LIBSCI:PE_MPICH:PE_DSMML:PE_PMI:PE_XPMEM
+HUGETLB_MORECORE_HEAPBASE=10000000000
+PE_HUGEPAGES_PKGCONFIG_VARIABLES=PE_HUGEPAGES_TEXT_SEGMENT:PE_HUGEPAGES_PAGE_SIZE
+HUGETLB_MORECORE=yes
+CHPL_RT_USE_HUGEPAGES=yes
+LMOD_FAMILY_CRAYPE_HUGEPAGES_VERSION=false
+LMOD_FAMILY_CRAYPE_HUGEPAGES=craype-hugepages16M
+__LMOD_REF_COUNT_PE_PKGCONFIG_PRODUCTS=PE_HUGEPAGES:1;PE_LIBSCI:1;PE_MPICH:1;PE_DSMML:1;PE_PMI:1;PE_XPMEM:1
+HUGETLB_FORCE_ELFMAP=yes+
+HUGETLB_ELFMAP=W
+__LMOD_REF_COUNT_PE_PRODUCT_LIST=CRAYPE:1;CRAY_PMI:1;CRAYPE_X86_TRENTO:1;PERFTOOLS:1;CRAYPAT:1;HUGETLB16M:1
+```
+
+## Running
+Refer to the `run_bale.sh` and `run_chapel.sh` for running Index Gather on Frontier.

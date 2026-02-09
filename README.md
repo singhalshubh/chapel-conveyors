@@ -1,14 +1,19 @@
 ## Introduction
-This repository contains the `chapel` and `conveyors` installation and execution on Frontier@ORNL. We conduct weak scaling experiments for nodes=[1...2048] with 64 cores per node and 8GB per node on 100GB/s network bandwidth Slingshot. We attempt this research in spirit of validating Chapel (2022-2025) results showcased, where Chapel auto-aggregated mode serves better performance than Conveyors. 
-This work is dated July 2025.
+This repository contains the `chapel` and `conveyors` installation and execution on Frontier@ORNL for radix sort and index gather benchmarks. We conduct weak scaling experiments for nodes=[1...256] with 64 cores per node and 8GB per node on 100GB/s network bandwidth Slingshot. We attempt this research in spirit of exploring energy efficiency of Chapel (auto-aggregated mode) relative to Conveyors and AGP OpenSHMEM. 
+Dated, Feb 9th 2026 EST.
 
-## Team (GT+ORNL)
-Shubhendra Pal Singhal, Akihiro Hayashi, Oscar Hernandez, Vivek Sarkar
+## Team (GT + ORNL + LANL + HPE)
+Georgia Institute of Technology 
+`Shubhendra Pal Singhal, Akihiro Hayashi, Vivek Sarkar`
 
-## Goals of the project
-- We use Index Gather, as rest of applications - Histogram and Topological Sort are reported to be slower than Conveyors.
-- Identify the performance in execution time for Chapel vs Conveyors on scale. 
-- Reason this performance different using a mathematical model, and diving in memory and network utlization. We shall ignore the visions/success of programming models out of scope, and solely focus on raw performance numbers.
+Oak Ridge National Laboratory
+`Aaron Welch, Oscar Hernandez`
+
+Los Alamos National Laboratory, USA
+`Steve Poole`
+
+Hewlett Packard Enterprise, USA
+`Nathan Wichmann, Bradford L. Chamberlain`
 
 ## Directory Structure
 ```
@@ -19,153 +24,27 @@ Shubhendra Pal Singhal, Akihiro Hayashi, Oscar Hernandez, Vivek Sarkar
 │   ├── ig_cyclic
 │   ├── ig_cyclic.cpp
 │   ├── Makefile
+│   ├── README.md
 │   └── run.sh
-├── chapel-frontier.tar.gz
-├── ig.chpl
+├── index-gather
+│   ├── chapel-frontier.tar.gz
+│   ├── ig_energy.chpl
+│   ├── ig_src_comm_matrix.chpl
+│   ├── README.md
+│   ├── run_bale.sh (run bale)
+│   └── run_chapel.sh (run chapel)
+├── radix-sort
+│   ├── arkouda-radix-sort-strided-counts.chpl
+│   ├── README.md
+│   ├── shmem_lsbsort_convey.cpp
+│   └── shmem_lsbsort.cpp
 └── README.md
 
-1 directory, 9 files
-```
-
-## Explanation of Chapel-IG
-
-```
-proc main() {
-  const D = if useBlockArr then blockDist.createDomain(0..#tableSize)
-                           else cyclicDist.createDomain(0..#tableSize);
-  var A: [D] int = D;
-
-  const UpdatesDom = blockDist.createDomain(0..#numUpdates);
-  var Rindex: [UpdatesDom] int;
-
-  fillRandom(Rindex, 208);
-  Rindex = mod(Rindex, tableSize);
-  var tmp: [UpdatesDom] int = -1;
-
-  startTimer();
-  forall (t, r) in zip (tmp, Rindex) with (var agg = new SrcAggregator(int)) {
-    agg.copy(t, A[r]);
-  }
-  stopTimer("AGG");
-}
-```
-- Input data is indices (Rindex) are generated at random [0, $N$ * num_locale * num_tasks/locale]. 
-- Operation performed is copy the value of A[rindex] into local buffer `t`. Therefore, destination increments +1 for request after-which a PUT-->GET is issued to copy the value back. It uses `SrcAggregator` which implies `t` is on local locale and A[r] is on remote locale. 
-
-`SrcAggregator.init operation`
-```
-proc ref postinit() {
-      dstAddrs = allocate(c_ptr(aggType), numLocales);
-      lSrcAddrs = allocate(c_ptr(aggType), numLocales);
-      bufferIdxs = bufferIdxAlloc();
-      for loc in myLocaleSpace {
-        dstAddrs[loc] = allocate(aggType, bufferSize);
-        lSrcAddrs[loc] = allocate(aggType, bufferSize);
-        bufferIdxs[loc] = 0;
-        rSrcAddrs[loc] = new remoteBuffer(aggType, bufferSize, loc);
-        rSrcVals[loc] = new remoteBuffer(elemType, bufferSize, loc);
-      }
-    }
-```
-- SrcAggregator is initialised with a following set of buffers - `dstAddrs, lSrcAddrs` are local and are of size #num_locale*8192, whereas `rSrcAddrs, rSrcVals` are remote buffers allocated for same size. 
-
-`SrcAggregator.copy operation`
-```
-    inline proc ref copy(ref dst: elemType, const ref src: elemType) {
-      if verboseAggregation {
-        writeln("SrcAggregator.copy is called");
-      }
-      if boundsChecking {
-        assert(dst.locale.id == here.id);
-      }
-      const dstAddr = getAddr(dst);
-
-      const loc = src.locale.id;
-      lastLocale = loc;
-      const srcAddr = getAddr(src);
-
-      ref bufferIdx = bufferIdxs[loc];
-      lSrcAddrs[loc][bufferIdx] = srcAddr;
-      dstAddrs[loc][bufferIdx] = dstAddr;
-      bufferIdx += 1;
-
-      if bufferIdx == bufferSize {
-        _flushBuffer(loc, bufferIdx, freeData=false);
-        opsUntilYield = yieldFrequency;
-      } else if opsUntilYield == 0 {
-        currentTask.yieldExecution();
-        opsUntilYield = yieldFrequency;
-      } else {
-        opsUntilYield -= 1;
-      }
-    }
-
-```
-- SrcAggregator per task simply copies the packet (in locale-wise buffer), and once #appends for any one locale = 1024 by a task, it calls flush operation.
-
-`SrcAggregator.flush operation`
-
-```
-proc ref _flushBuffer(loc: int, ref bufferIdx, freeData) {
-      const myBufferIdx = bufferIdx;
-      if myBufferIdx == 0 then return;
-
-      ref myLSrcVals = lSrcVals[loc];
-      ref myRSrcAddrs = rSrcAddrs[loc];
-      ref myRSrcVals = rSrcVals[loc];
-
-      // Allocate remote buffers
-      const rSrcAddrPtr = myRSrcAddrs.cachedAlloc();
-      const rSrcValPtr = myRSrcVals.cachedAlloc();
-
-      // Copy local addresses to remote buffer
-      myRSrcAddrs.PUT(lSrcAddrs[loc], myBufferIdx);
-
-      // Process remote buffer, copying the value of our addresses into a
-      // remote buffer
-      on Locales[loc] {
-        for i in 0..<myBufferIdx {
-          rSrcValPtr[i] = rSrcAddrPtr[i].deref();
-        }
-        if freeData {
-          myRSrcAddrs.localFree(rSrcAddrPtr);
-        }
-      }
-      if freeData {
-        myRSrcAddrs.markFreed();
-      }
-
-      // Copy remote values into local buffer
-      myRSrcVals.GET(myLSrcVals, myBufferIdx);
-
-      // Assign the srcVal to the dstAddrs
-      var dstAddrPtr = c_addrOf(dstAddrs[loc][0]);
-      var srcValPtr = c_addrOf(myLSrcVals[0]);
-      for i in 0..<myBufferIdx {
-        dstAddrPtr[i].deref() = srcValPtr[i];
-      }
-
-      bufferIdx = 0;
-    }
-```
-
-- On flush per locale, every task invokes `PUT` for desired addresses of indices and runs a blocking operation to copy the values to remote locale. After that, it runs GET operation to fetch the values. 
-
-## Theoretical Understanding of SrcAggregator
-- Runs per task, where every task knows address of A[] which is on shared memory (using shmem_malloc analogous). 
-- Buffers are locale-wise and are flushed and executed in blocking way per task. If we view the same from process pov, i.e. per locale, certainly we do see overlap of comp and comm since per locale, otehr tasks can still perform their iteration. 
-- Note, that conveyors overlaps comp and comm even for per task. Since, it allocates buffers per task, every task can perform comp for other PEs fetch (remote or local), whilst issuing communication call. Here backpressure kicks in, whereas in Chapel, blocking nature prevents this.  
-
-## Directory Structure
-```
-.
-├── chapel-frontier.tar.gz (contains execution of chapel IG)
-└── README.md
-0 directories, 2 files
+3 directories, 18 files
 ```
 
 ## Experimentation
-Refer to https://docs.olcf.ornl.gov/systems/frontier_user_guide.html for description of HPC-supercomputer named Frontier.
+Refer to https://docs.olcf.ornl.gov/systems/frontier_user_guide.html for description of HPC-supercomputer named Frontier@ORNL.
 
 ### Installation of Chapel
 > We use `ofi` for setup.
@@ -243,65 +122,8 @@ yieldFrequency = 1024
 When the destination is always local and the source may be remote, a :record:`SrcAggregator` should be used.
 ```
 
-### Execution for Chapel
+### Installation of BALE
 
-`run_chapel.sh`
-```
-#!/bin/bash
-#SBATCH -A csc607
-#SBATCH -J chapel_ig
-#SBATCH -t 0:40:00
-#SBATCH -p batch
-#SBATCH -S 0
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=64
-
-export CHPL_LAUNCHER_ACCOUNT=csc607
-export CHPL_LAUNCHER_WALLTIME=0:40:00
-export CHPL_LAUNCHER_USE_SBATCH=1
-export CHPL_LAUNCHER_QUEUE=batch
-export CHPL_LAUNCHER_CPUS_PER_CU=64
-
-export CHPL_LAUNCHER=slurm-srun
-export CHPL_RT_MAX_HEAP_SIZE="50%"
-export CHPL_LAUNCHER_MEM=unset
-export CHPL_LAUNCHER_CORES_PER_LOCALE=64
-
-export CHPL_LLVM=bundled
-export CHPL_COMM=ofi
-export CHPL_LOCALE_MODEL=flat
-export CHPL_GPU=none
-
-cd chapel/
-source util/setchplenv.bash
-cd test/studies/bale/aggregation/
-
-srun -n ${NODES} ./ig_real -nl ${NODES} --N=${N} --M=${M}
-```
-
-`submit_chapel.sh`
-```
-#!/bin/bash
-
-SIZES=(1000000 10000000 100000000)
-MSIZES=(1000000 10000000 100000000)
-NODES_LIST=(1 2 4 8 16 32 64 128 256 512 1024 2048)
-
-for N in "${SIZES[@]}"; do
-  for M in "${MSIZES[@]}"; do
-    for NODES in "${NODES_LIST[@]}"; do
-      export NODES N M
-      export SBATCH_EXPORT=ALL
-      sbatch --ntasks=$NODES -o output_chapel_M${M}_N${N}_nodes${NODES} --export=NODES=$NODES,M=$M,N=$N run_chapel.sh
-    done
-  done
-done
-
-```
-
-### Installation of Conveyors
-
-`setup_bale.sh`
 ```
 module use /ccs/proj/csc607/cray-openshmemx/modulefiles
 module purge
@@ -334,130 +156,13 @@ export BALE_INSTALL=$PWD/bale/src/bale_classic/build_cray
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$BALE_INSTALL/lib
 ```
 
-### Execution for Conveyors
-
-`submit_bale.sh`
-```
-#!/bin/bash
-
-SIZES=(1000000 10000000 100000000)
-TSIZES=(1000000 10000000 100000000)
-NODES_LIST=(1 2 4 8 16 32 64 128 256 512 1024 2048)
-
-for N in "${SIZES[@]}"; do
-  for T in "${TSIZES[@]}"; do
-    for NODES in "${NODES_LIST[@]}"; do
-      export N T
-      export SBATCH_EXPORT=ALL
-      sbatch --ntasks=$NODES --export=ALL,N=$N,T=$T,NODES=$NODES run_bale.sh
-    done
-  done
-done
-```
-
-`run_bale.sh`
-```
-#!/bin/bash
-#SBATCH -A csc607
-#SBATCH -J bale_histo
-#SBATCH -o output
-#SBATCH -t 10:40:00
-#SBATCH -p batch
-#SBATCH --ntasks-per-node=64
-#SBATCH --exclusive
-#SBATCH -S 0
-
-srun -N $NODES -n $(($NODES*64)) ./bale/src/bale_classic/build_cray/bin/ig -n $N -T $T &> out_bale_N${N}_T${T}_nodes_${NODES}
-```
-
-## Results
-
-- We observe `exstack` and `exstack2` go OUT-OF-MEMORY(OOM) at and beyond 1024 nodes.
-- We observe `Conveyors` to be performant on scale.
-
-## Running Chapel Program for 16M HugePageSize 
-In addition to normal execution,
-```
-module load craype-hugepages16M
-export CHPL_RT_USE_HUGEPAGES=yes
-```
-
-`conf_chapel_huge.sh`
-This file checks whether the job is using `HugePageModules` correctly or not. This checks the env.
-
-```
-#!/bin/bash
-#SBATCH -A csc607
-#SBATCH -J chapel_ig
-#SBATCH -t 0:40:00
-#SBATCH -p batch
-#SBATCH -S 0
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=64
-#SBATCH --ntasks 1
-
-export CHPL_LAUNCHER_ACCOUNT=csc607
-export CHPL_LAUNCHER_WALLTIME=0:40:00
-export CHPL_LAUNCHER_USE_SBATCH=1
-export CHPL_LAUNCHER_QUEUE=batch
-export CHPL_LAUNCHER_CPUS_PER_CU=64
-export CHPL_RT_USE_HUGEPAGES=yes
-
-export CHPL_LAUNCHER=slurm-srun
-export CHPL_RT_MAX_HEAP_SIZE="50%"
-export CHPL_LAUNCHER_MEM=unset
-export CHPL_LAUNCHER_CORES_PER_LOCALE=64
-
-export CHPL_LLVM=bundled
-export CHPL_COMM=ofi
-export CHPL_LOCALE_MODEL=flat
-export CHPL_GPU=none
-
-export CHPL_RT_USE_HUGEPAGES=yes
-export CHPL_RT_PRINT_ENV=true
-
-module load PrgEnv-gnu
-module load cray-python
-module load craype-hugepages16M
-
-cd chapel/
-source util/setchplenv.bash
-cd test/studies/bale/aggregation/
-srun -n 1 ./ig_real -nl 1 &
-echo "Runtime env:"
-env | grep HUGE
-```
-#### Output
-```
-Runtime env:
-OLCF_FAMILY_CRAYPE_HUGEPAGES=craype-hugepages16M
-PE_PRODUCT_LIST=CRAYPE:CRAY_PMI:CRAYPE_X86_TRENTO:PERFTOOLS:CRAYPAT:HUGETLB16M
-HUGETLB_DEFAULT_PAGE_SIZE=16M
-OLCF_FAMILY_CRAYPE_HUGEPAGES_VERSION=false
-PE_PKGCONFIG_PRODUCTS=PE_HUGEPAGES:PE_LIBSCI:PE_MPICH:PE_DSMML:PE_PMI:PE_XPMEM
-HUGETLB_MORECORE_HEAPBASE=10000000000
-PE_HUGEPAGES_PKGCONFIG_VARIABLES=PE_HUGEPAGES_TEXT_SEGMENT:PE_HUGEPAGES_PAGE_SIZE
-HUGETLB_MORECORE=yes
-CHPL_RT_USE_HUGEPAGES=yes
-LMOD_FAMILY_CRAYPE_HUGEPAGES_VERSION=false
-LMOD_FAMILY_CRAYPE_HUGEPAGES=craype-hugepages16M
-__LMOD_REF_COUNT_PE_PKGCONFIG_PRODUCTS=PE_HUGEPAGES:1;PE_LIBSCI:1;PE_MPICH:1;PE_DSMML:1;PE_PMI:1;PE_XPMEM:1
-HUGETLB_FORCE_ELFMAP=yes+
-HUGETLB_ELFMAP=W
-__LMOD_REF_COUNT_PE_PRODUCT_LIST=CRAYPE:1;CRAY_PMI:1;CRAYPE_X86_TRENTO:1;PERFTOOLS:1;CRAYPAT:1;HUGETLB16M:1
-```
-
-## Energy measurements
-`ig.chpl` in this repository contains the PAPI instrumentation for energy for node and memory using crap_pm counters.
-
-Compile with
-`chpl ig.chpl --fast -suseBlockArr=true -lpapi`
-
 ## Contributors
-Shubhendra Pal Singhal (ssinghal74@gatech.edu), Habanero Labs, USA
-> Credits to Dr. Akihiro Hayashi (ahayashi@gatech.edu) for finding the performance reportings of Chapel.
+Lead: Shubhendra Pal Singhal (ssinghal74@gatech.edu), Habanero Labs, USA
+> Credits to Dr. Akihiro Hayashi (ahayashi@gatech.edu) for finding the benchmarks.
 
 > Credits to ORNL GRO internship with Dr. Oscar Hernandez (oscar@ornl.gov) and funding support for Frontier machine access.
 
 > Credits to Dr. Wael Elwasif (elwasifwr@ornl.gov) for guiding us on Chapel installation on Frontier.
+
+> Special thanks to HPE for supporting this work and helping us throughout with Chapel's best possible executions. Thanks to Dr. Bradford, and Dr. Nathan. 
 

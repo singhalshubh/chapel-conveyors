@@ -1,8 +1,14 @@
 ## Radix Sort
-This profiling is inspired from https://dl.acm.org/doi/10.1145/3731599.3767500, which acheives performance as Conveyors. (git clone https://github.com/hpc-ai-adv-dev/distributed-lsb/). The credit belongs to authors of the paper (https://dl.acm.org/doi/10.1145/3731599.3767500) who implemented the benchmark. We only claim the profiling additions and results as our contribution. 
+This profiling is inspired from https://dl.acm.org/doi/10.1145/3731599.3767500, which acheives performance as Conveyors. The credit belongs to authors of the paper (https://dl.acm.org/doi/10.1145/3731599.3767500) who implemented the benchmark. We only claim the profiling additions and results as our contribution. 
 
 ## Installation and Running on Frontier
 In this, we showcase example of running $2^30$ elements per node, for radix sort benchmark. Run the benchmark for performance. Run the codes available here only to collect energy metrics!
+
+```
+git clone https://github.com/hpc-ai-adv-dev/distributed-lsb/
+cd distributed-lsb/shmem/
+git clone https://github.com/imneme/pcg-cpp.git
+```
 
 ### Chapel
 

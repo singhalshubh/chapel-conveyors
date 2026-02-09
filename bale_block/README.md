@@ -1,0 +1,2 @@
+## Cyclic vs Block for Conveyors
+This repository is to perform a simple check of whether cyclic and block distributions in Conveyors for Index Gather results in the same performance or not? The answer is yes!
