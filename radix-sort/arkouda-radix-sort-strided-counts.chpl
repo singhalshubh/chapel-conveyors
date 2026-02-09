@@ -2,32 +2,6 @@
    that has been modified to be a self-contained test.
    It is based upon Arkouda commit ca6b25672913ef689c3c734d9e4d83be5bff821a. */
 
-extern {
-  #include <papi.h>
-
-  int papi_ok = 1, eventset = PAPI_NULL;
-  long long val[1] = {0};
-
-  void   papi_start(void);
-  double papi_stop(void);
-
-  void papi_start(void) {
-    if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT) papi_ok = 0;
-    if (papi_ok && PAPI_create_eventset(&eventset) != PAPI_OK) papi_ok = 0;
-    if (papi_ok && PAPI_add_named_event(eventset, "cray_pm:::PM_ENERGY:NODE") != PAPI_OK) papi_ok = 0;
-    if (papi_ok && PAPI_start(eventset) != PAPI_OK) papi_ok = 0;
-  }
-
-  double papi_stop(void) {
-    if (papi_ok && PAPI_stop(eventset, val) == PAPI_OK)
-        return (double) val[0];
-    return 0.0;
-  }
-}
-
-extern proc papi_start(): void;
-extern proc papi_stop(): c_double;
-
 module ArkoudaRadixSortStandalone
 {
     /* number of tuples to sort */
@@ -175,6 +149,32 @@ module ArkoudaRadixSortStandalone
             }
         } // for rshift
     }//proc radixSortLSDCore
+
+    extern {
+      #include <papi.h>
+
+      int papi_ok = 1, eventset = PAPI_NULL;
+      long long val[1] = {0};
+
+      void   papi_start(void);
+      double papi_stop(void);
+
+      void papi_start(void) {
+        if (PAPI_library_init(PAPI_VER_CURRENT) != PAPI_VER_CURRENT) papi_ok = 0;
+        if (papi_ok && PAPI_create_eventset(&eventset) != PAPI_OK) papi_ok = 0;
+        if (papi_ok && PAPI_add_named_event(eventset, "cray_pm:::PM_ENERGY:NODE") != PAPI_OK) papi_ok = 0;
+        if (papi_ok && PAPI_start(eventset) != PAPI_OK) papi_ok = 0;
+      }
+
+      double papi_stop(void) {
+        if (papi_ok && PAPI_stop(eventset, val) == PAPI_OK)
+            return (double) val[0];
+        return 0.0;
+      }
+    }
+
+    extern proc papi_start(): void;
+    extern proc papi_stop(): c_double;
 
     proc main() {
       writeln(numLocales, " locales with ", numTasks, " tasks per locale");
