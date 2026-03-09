@@ -1,0 +1,2 @@
+## Omnistat Tooling
+This subdirectory consists of how Omnistat tool offered by AMD was used on Frontier to get the total energy spent in network. We showcase the two scripts for radix sort for chapel and conveyors. 

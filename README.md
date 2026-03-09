@@ -1,6 +1,6 @@
 ## Introduction
 This repository contains the `chapel` and `conveyors` installation and execution on Frontier@ORNL for radix sort and index gather benchmarks. We conduct weak scaling experiments for nodes=[1...256] with 64 cores per node and 8GB per node on 100GB/s network bandwidth Slingshot. We attempt this research in spirit of exploring energy efficiency of Chapel (auto-aggregated mode) relative to Conveyors and AGP OpenSHMEM. 
-Dated, Feb 9th 2026 EST.
+Dated, March 13th 2026 EST, this work is accepted at CUG 2026 (https://cug.org), and we will be shortly posting the doi link. 
 
 ## Team (GT + ORNL + LANL + HPE)
 Georgia Institute of Technology: 
@@ -12,7 +12,7 @@ Oak Ridge National Laboratory:
 Los Alamos National Laboratory:
 `Steve Poole`
 
-Hewlett Packard Enterprise, USA :
+Hewlett Packard Enterprise, USA:
 `Nathan Wichmann, Bradford L. Chamberlain`
 
 ## Directory Structure
@@ -38,9 +38,14 @@ Hewlett Packard Enterprise, USA :
 │   ├── README.md
 │   ├── shmem_lsbsort_convey.cpp
 │   └── shmem_lsbsort.cpp
+├── omnistat
+│   ├── chapel.sh
+│   ├── conveyor.sh
+│   ├── network-extract.py
+│   └── README.md
 └── README.md
 
-3 directories, 18 files
+4 directories, 22 files
 ```
 
 ## Experimentation
